@@ -22,5 +22,12 @@
       <guid>http://localhost:1313/episodes/001-morning-light/</guid>
       <description>A short-form Morning Prayer office welcoming the new day, featuring Psalm 63, a reading from Lamentations 3, and brief intercessions for the hours ahead.</description>
     </item>
+    <item>
+      <title>About</title>
+      <link>http://localhost:1313/about/</link>
+      <pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate>
+      <guid>http://localhost:1313/about/</guid>
+      <description>About</description>
+    </item>
   </channel>
 </rss>

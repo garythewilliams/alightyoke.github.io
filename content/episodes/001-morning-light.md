@@ -11,7 +11,7 @@ episode: 1
 season: 1
 episodeType: "full"
 explicit: false
-audio_url: "https://traffic.libsyn.com/latenightlinux/LAD135.mp3"
+audio_url: "https://cdn.alightyoke.co.uk/ep/ep01.mp3"
 audio_length: 7124800
 duration: "07:25"
 
@@ -20,7 +20,7 @@ ShowToc: false
 ShowBreadCrumbs: true
 ---
 
-{{< audio src="https://traffic.libsyn.com/latenightlinux/LAD135.mp3" caption="Listen to Episode 001 (07:25)" >}}
+{{< audio src="https://cdn.alightyoke.co.uk/ep/ep01.mp3" caption="Listen to Episode 001 (07:25)" >}}
 
 ### Office Outline
 * **00:00** – Opening Versicle & Morning Collect

@@ -11,7 +11,8 @@ theme = "PaperMod"
   enabled = true
   title = "A Light Yoke"
   subtitle = """A short form daily office.  
-*"For my yoke is easy, and my burden is light."* Matthew 11:30 NIV UK"""
+*"For my yoke is easy, and my burden is light."*  
+Matthew 11:30 NIVUK"""
   imageUrl = "/images/podcast-cover-1.jpg"
   imageWidth = 160
   imageHeight = 160
@@ -23,3 +24,13 @@ theme = "PaperMod"
 [[params.profileMode.buttons]]
   name = "RSS"
   url = "/episodes/index.xml"
+
+[[params.profileMode.buttons]]
+  name = "About"
+  url = "/about/"
+
+#[[menu.main]]
+#  identifier = "about"
+#  name = "About"
+#  url = "/about/"
+#  weight = 10
