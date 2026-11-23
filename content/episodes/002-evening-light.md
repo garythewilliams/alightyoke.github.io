@@ -11,7 +11,7 @@ episode: 2
 season: 1
 episodeType: "full"
 explicit: false
-audio_url: "https://cdn.example.com/episodes/aly-002.mp3"
+audio_url: "https://traffic.libsyn.com/latenightlinux/LAD134.mp3"
 audio_length: 6814200
 duration: "07:05"
 
@@ -20,7 +20,7 @@ ShowToc: false
 ShowBreadCrumbs: true
 ---
 
-{{< audio src="https://cdn.example.com/episodes/aly-002.mp3" caption="Listen to Episode 002 (07:05)" >}}
+{{< audio src="https://traffic.libsyn.com/latenightlinux/LAD134.mp3" caption="Listen to Episode 002 (07:05)" >}}
 
 ### Office Outline
 * **00:00** – Opening Versicle & *Phos Hilaron* (O Gracious Light)
