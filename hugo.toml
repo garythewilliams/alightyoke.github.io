@@ -1,4 +1,24 @@
-baseURL = 'https://alightyoke.co.uk'
-locale = 'en-us'
-title = 'A Light Yoke'
-theme = 'ananke'
+baseURL = "https://alightyoke.co.uk"
+title = "A Light Yoke"
+theme = "PaperMod"
+
+[params]
+  defaultTheme = "auto"
+  ShowShareButtons = true
+  ShowPostNavLinks = true
+
+[params.profileMode]
+  enabled = true
+  title = "A Light Yoke"
+  subtitle = "A short form daily office for everyone."
+  imageUrl = "/images/podcast-cover.jpg"
+  imageWidth = 160
+  imageHeight = 160
+
+[[params.profileMode.buttons]]
+  name = "Episodes"
+  url = "/episodes"
+
+[[params.profileMode.buttons]]
+  name = "RSS"
+  url = "/episodes/index.xml"

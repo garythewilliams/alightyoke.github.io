@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Episodes on A Light Yoke</title>
+    <link>http://localhost:1313/episodes/</link>
+    <description>Recent content in Episodes on A Light Yoke</description>
+    <generator>Hugo</generator>
+    <language>en</language>
+    <lastBuildDate>Mon, 23 Nov 2026 06:00:00 +0000</lastBuildDate>
+    <atom:link href="http://localhost:1313/episodes/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>001: Monday Morning Prayer – Ordinary Time</title>
+      <link>http://localhost:1313/episodes/001-morning-prayer/</link>
+      <pubDate>Mon, 23 Nov 2026 06:00:00 +0000</pubDate>
+      <guid>http://localhost:1313/episodes/001-morning-prayer/</guid>
+      <description>A short-form Morning Prayer office featuring Psalm 23, a reading from Matthew 11, and brief intercessions for the day ahead.</description>
+    </item>
+  </channel>
+</rss>
