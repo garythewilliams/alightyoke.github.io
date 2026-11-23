@@ -11,7 +11,7 @@ theme = "PaperMod"
   enabled = true
   title = "A Light Yoke"
   subtitle = "A short form daily office for everyone."
-  imageUrl = "/images/podcast-cover.jpg"
+  imageUrl = "/images/podcast-cover-1.jpg"
   imageWidth = 160
   imageHeight = 160
 
