@@ -1,0 +1,1016 @@
+#!/usr/bin/env node
+
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { constants } from "node:fs";
+import {
+  access,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import TOML from "@iarna/toml";
+import { load } from "cheerio";
+
+/**
+ * Absolute path to the theme repository root (the parent of `scripts/`).
+ */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+interface CommandResult {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  combined: string;
+  durationMs: number;
+}
+
+interface StepDefinition {
+  name: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  expectedFiles?: string[];
+}
+
+/**
+ * Where the theme under test comes from.
+ *
+ * - `local`: install the local working tree of this repository (default), so the
+ *   test exercises the actual code on the current branch, including uncommitted
+ *   changes. This is what makes the test meaningful as a pre-push / CI gate.
+ * - `submodule`: clone the published theme from its remote via `git submodule add`,
+ *   reproducing the documented quickstart install. Useful to verify the public
+ *   install path, but does **not** see local changes.
+ */
+type ThemeSource = "local" | "submodule";
+
+interface RoutineOptions {
+  projectName: string;
+  themeSource: ThemeSource;
+  themePath: string;
+  themeRepo: string;
+  themeDir: string;
+  themeName: string;
+  configFile: string;
+  keepOnSuccess: boolean;
+  keepOnFailure: boolean;
+  verbose: boolean;
+}
+
+interface StepReport {
+  step: string;
+  commandLine: string;
+  cwd: string;
+  result: CommandResult;
+}
+
+const DEFAULT_OPTIONS: RoutineOptions = {
+  projectName: "quickstart",
+  themeSource: "local",
+  themePath: REPO_ROOT,
+  themeRepo: "https://github.com/gohugo-ananke/ananke.git",
+  themeDir: "themes/ananke",
+  themeName: "ananke",
+  configFile: "hugo.toml",
+  keepOnSuccess: false,
+  keepOnFailure: true,
+  verbose: true,
+};
+
+/**
+ * Print CLI help.
+ */
+function printHelp(): void {
+  console.log(
+    `
+Usage:
+  node scripts/test-hugo-quickstart.ts [options]
+
+Options:
+  --project-name=<name>         Hugo project folder name inside the temp directory
+  --theme-path=<path>           Install the theme from this local directory (default: this repo).
+                                Implies local mode; tests the actual working tree.
+  --use-submodule               Install the published theme via "git submodule add" instead
+                                of the local working tree (verifies the documented quickstart).
+  --theme-repo=<url>            Git URL for the theme submodule (only used with --use-submodule)
+  --theme-dir=<path>            Theme target directory inside the project
+  --theme-name=<name>           Theme name written into hugo.toml
+  --config-file=<file>          Hugo config file to update
+  --keep-on-success             Do not delete the temp directory when the test passes
+  --no-keep-on-failure          Delete the temp directory when the test fails
+  --quiet                       Reduce step logging
+  --help                        Show this help
+`.trim(),
+  );
+}
+
+/**
+ * Parse CLI arguments into routine options.
+ *
+ * @param argv Raw CLI arguments after the executable and script path.
+ * @returns Parsed routine options.
+ * @throws Error when an unknown argument is passed.
+ */
+function parseArgs(argv: string[]): RoutineOptions {
+  const options: RoutineOptions = { ...DEFAULT_OPTIONS };
+
+  for (const arg of argv) {
+    if (arg === "--help") {
+      printHelp();
+      process.exit(0);
+    }
+
+    if (arg === "--keep-on-success") {
+      options.keepOnSuccess = true;
+      continue;
+    }
+
+    if (arg === "--no-keep-on-failure") {
+      options.keepOnFailure = false;
+      continue;
+    }
+
+    if (arg === "--quiet") {
+      options.verbose = false;
+      continue;
+    }
+
+    if (arg === "--use-submodule") {
+      options.themeSource = "submodule";
+      continue;
+    }
+
+    if (arg.startsWith("--theme-path=")) {
+      options.themePath = resolve(arg.slice("--theme-path=".length));
+      options.themeSource = "local";
+      continue;
+    }
+
+    if (arg.startsWith("--project-name=")) {
+      options.projectName = arg.slice("--project-name=".length);
+      continue;
+    }
+
+    if (arg.startsWith("--theme-repo=")) {
+      options.themeRepo = arg.slice("--theme-repo=".length);
+      continue;
+    }
+
+    if (arg.startsWith("--theme-dir=")) {
+      options.themeDir = arg.slice("--theme-dir=".length);
+      continue;
+    }
+
+    if (arg.startsWith("--theme-name=")) {
+      options.themeName = arg.slice("--theme-name=".length);
+      continue;
+    }
+
+    if (arg.startsWith("--config-file=")) {
+      options.configFile = arg.slice("--config-file=".length);
+      continue;
+    }
+
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+
+  return options;
+}
+
+/**
+ * Format a command for human-readable logging.
+ *
+ * @param command Executable name.
+ * @param args Executable arguments.
+ * @returns Full command line.
+ */
+function formatCommand(command: string, args: string[]): string {
+  return [command, ...args]
+    .map((part) => (/\s/.test(part) ? JSON.stringify(part) : part))
+    .join(" ");
+}
+
+/**
+ * Run a command and capture stdout/stderr.
+ *
+ * @param command Executable name.
+ * @param args Executable arguments.
+ * @param cwd Working directory.
+ * @returns Command execution result.
+ */
+async function runCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+): Promise<CommandResult> {
+  const started = Date.now();
+
+  return new Promise<CommandResult>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (error: Error) => {
+      reject(error);
+    });
+
+    child.on("close", (code, signal) => {
+      const durationMs = Date.now() - started;
+      const combined = [stdout, stderr]
+        .filter(Boolean)
+        .join(stdout && stderr ? "\n" : "");
+
+      resolve({
+        code,
+        signal,
+        stdout,
+        stderr,
+        combined,
+        durationMs,
+      });
+    });
+  });
+}
+
+/**
+ * Ensure a file or directory exists.
+ *
+ * @param filePath Absolute path to check.
+ */
+async function assertFileExists(filePath: string): Promise<void> {
+  await access(filePath, constants.F_OK);
+}
+
+/**
+ * Ensure a file or directory does not exist.
+ *
+ * @param filePath Absolute path to check.
+ */
+async function assertFileDoesNotExist(filePath: string): Promise<void> {
+  try {
+    await access(filePath, constants.F_OK);
+    throw new Error(`Unexpected path exists: ${filePath}`);
+  } catch (error: unknown) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("Unexpected path exists:")
+    ) {
+      throw error;
+    }
+  }
+}
+
+/**
+ * Read a UTF-8 text file.
+ *
+ * @param filePath Absolute file path.
+ * @returns File contents.
+ */
+async function readTextFile(filePath: string): Promise<string> {
+  return readFile(filePath, "utf8");
+}
+
+/**
+ * Write a UTF-8 text file.
+ *
+ * @param filePath Absolute file path.
+ * @param content File contents.
+ */
+async function writeTextFile(filePath: string, content: string): Promise<void> {
+  await writeFile(filePath, content, "utf8");
+}
+
+/**
+ * Remove the generated public directory inside the temporary project.
+ *
+ * @param projectRoot Absolute path to the temporary quickstart project.
+ */
+async function removePublicDir(projectRoot: string): Promise<void> {
+  const publicPath = join(projectRoot, "public");
+  await rm(publicPath, { recursive: true, force: true });
+}
+
+/**
+ * Execute one step and validate success.
+ *
+ * @param step Step definition.
+ * @returns Step report.
+ * @throws Error when the command fails or an expected file is missing.
+ */
+async function executeStep(step: StepDefinition): Promise<StepReport> {
+  const result = await runCommand(step.command, step.args, step.cwd);
+  const commandLine = formatCommand(step.command, step.args);
+
+  if (result.code !== 0) {
+    const details = [
+      `Step failed: ${step.name}`,
+      `Command: ${commandLine}`,
+      `Working directory: ${step.cwd}`,
+      `Exit code: ${String(result.code)}`,
+      result.signal ? `Signal: ${result.signal}` : "",
+      result.stdout ? `STDOUT:\n${result.stdout}` : "",
+      result.stderr ? `STDERR:\n${result.stderr}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    throw new Error(details);
+  }
+
+  if (step.expectedFiles) {
+    for (const relativePath of step.expectedFiles) {
+      const absolutePath = join(step.cwd, relativePath);
+
+      try {
+        await assertFileExists(absolutePath);
+      } catch (error: unknown) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Unknown file assertion error";
+
+        throw new Error(
+          [
+            `Step failed: ${step.name}`,
+            `Command: ${commandLine}`,
+            `Working directory: ${step.cwd}`,
+            `Expected file missing: ${absolutePath}`,
+            `Details: ${message}`,
+            result.stdout ? `STDOUT:\n${result.stdout}` : "",
+            result.stderr ? `STDERR:\n${result.stderr}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        );
+      }
+    }
+  }
+
+  return {
+    step: step.name,
+    commandLine,
+    cwd: step.cwd,
+    result,
+  };
+}
+
+/**
+ * Determine whether a Hugo command generates output in `public/`.
+ *
+ * @param step Step definition.
+ * @returns True when the command is a build command.
+ */
+function isHugoBuildCommand(step: StepDefinition): boolean {
+  if (step.command !== "hugo") {
+    return false;
+  }
+
+  if (step.args.length === 0) {
+    return true;
+  }
+
+  if (step.args.includes("--buildDrafts")) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Execute a Hugo build command after clearing the generated public directory.
+ *
+ * @param step Step definition.
+ * @param projectRoot Absolute path to the temporary quickstart project.
+ * @returns Step report.
+ */
+async function executeHugoBuildStep(
+  step: StepDefinition,
+  projectRoot: string,
+): Promise<StepReport> {
+  await removePublicDir(projectRoot);
+  return executeStep(step);
+}
+
+/**
+ * Check the configured theme using the TOML parser.
+ */
+async function assertThemeConfigured(
+  configPath: string,
+  themeName: string,
+): Promise<void> {
+  assert.equal(TOML.parse(await readTextFile(configPath))["theme"], themeName);
+}
+
+async function assertHomepageLooksValid(homepagePath: string): Promise<void> {
+  const html = await readTextFile(homepagePath);
+  assert.ok(html.trim(), "Generated homepage must not be empty");
+  const $ = load(html);
+  for (const selector of [
+    "html",
+    "title",
+    "body",
+    'link[rel="stylesheet"]',
+    "nav, header",
+    "main, article, section",
+  ]) {
+    assert.ok($(selector).length, `Homepage missing ${selector}`);
+  }
+  assert.ok(
+    $(".bg-black, .near-white, .sans-serif, .pa3, .ma0").length,
+    "Homepage missing theme classes",
+  );
+}
+
+/**
+ * Extract the auto-generated date line from a Hugo content file with TOML frontmatter.
+ *
+ * @param content Raw file contents.
+ * @returns Original date line.
+ * @throws Error when the date line is missing.
+ */
+function extractGeneratedDateLine(content: string): string {
+  const match = content.match(/^\s*date\s*=\s*.+$/m);
+
+  if (!match) {
+    throw new Error(
+      [
+        "Strict assertion failed: could not find auto-generated date line in content file.",
+        "Actual file contents:",
+        content,
+      ].join("\n\n"),
+    );
+  }
+
+  return match[0];
+}
+
+/**
+ * Replace the generated content with the requested sample draft while preserving
+ * the original date line created by `hugo new`.
+ *
+ * @param contentPath Absolute path to the content file.
+ */
+async function replaceGeneratedContent(contentPath: string): Promise<void> {
+  const original = await readTextFile(contentPath);
+  const dateLine = extractGeneratedDateLine(original);
+
+  const updated = [
+    "+++",
+    "title = 'My First Post'",
+    dateLine,
+    "draft = true",
+    "+++",
+    "## Introduction",
+    "",
+    "This is **bold** text, and this is *emphasized* text.",
+    "",
+    "Visit the [Hugo](https://gohugo.io) website!",
+    "",
+  ].join("\n");
+
+  await writeTextFile(contentPath, updated);
+}
+
+/**
+ * Replace the root Hugo config with the requested quickstart config.
+ *
+ * @param configPath Absolute path to `hugo.toml`.
+ * @param themeName Theme name to set.
+ */
+async function replaceHugoConfig(
+  configPath: string,
+  themeName: string,
+): Promise<void> {
+  const content = [
+    "baseURL = 'https://example.com/'",
+    "locale = 'en-gb'",
+    "title = 'Ananke Test Quickstart'",
+    `theme = '${themeName}'`,
+    "",
+  ].join("\n");
+
+  await writeTextFile(configPath, content);
+}
+
+/**
+ * Assert that the generated page contains the expected rendered draft content.
+ *
+ * @param pageHtml HTML from `public/foo/index.html`.
+ */
+function assertDraftPageRendered(pageHtml: string): void {
+  const $ = load(pageHtml);
+  assert.equal(
+    $("h2").filter((_, element) => $(element).text().trim() === "Introduction")
+      .length,
+    1,
+  );
+  assert.equal($("strong").text().trim(), "bold");
+  assert.equal($("em").text().trim(), "emphasized");
+  assert.equal($('a[href="https://gohugo.io"]').text().trim(), "Hugo");
+  assert.ok($("h1").text().includes("My First Post"));
+}
+
+function assertUpdatedConfigInOutput(homepageHtml: string): void {
+  const $ = load(homepageHtml);
+  assert.ok($("body").text().includes("Ananke Test Quickstart"));
+  assert.equal($("html").attr("lang"), "en-gb");
+}
+
+/**
+ * Assert that the draft page is not part of the production build.
+ *
+ * @param projectRoot Project root.
+ * @param homepagePath Absolute path to `public/index.html`.
+ */
+async function assertDraftHiddenInProduction(
+  projectRoot: string,
+  homepagePath: string,
+): Promise<void> {
+  const draftOutputPath = join(projectRoot, "public", "foo", "index.html");
+  await assertFileDoesNotExist(draftOutputPath);
+
+  const homepageHtml = await readTextFile(homepagePath);
+
+  if (load(homepageHtml)("body").text().includes("My First Post")) {
+    throw new Error(
+      [
+        "Strict assertion failed: draft post title was visible in the production homepage output.",
+        `Homepage file: ${homepagePath}`,
+      ].join("\n\n"),
+    );
+  }
+}
+
+/**
+ * Determine whether a directory is the work tree of a Git repository.
+ *
+ * @param path Absolute directory path.
+ * @returns True when `path` is inside a Git work tree.
+ */
+
+async function isGitWorkTree(path: string): Promise<boolean> {
+  const result = await runCommand(
+    "git",
+    ["-C", path, "rev-parse", "--is-inside-work-tree"],
+    path,
+  );
+
+  return result.code === 0 && result.stdout.trim() === "true";
+}
+
+/**
+ * Copy the local theme working tree into the project's theme directory.
+ *
+ * When the source is a Git work tree, the file list is derived from Git so that
+ * ignored paths (`node_modules`, `public`, generated resources, ...) are skipped
+ * automatically while uncommitted and untracked-but-not-ignored changes are still
+ * included. This makes the test reflect the exact state of the current branch.
+ *
+ * @param themePath Absolute path to the local theme source directory.
+ * @param destination Absolute path to the theme directory inside the project.
+ * @throws Error when the source contains no theme files.
+ */
+async function copyLocalTheme(
+  themePath: string,
+  destination: string,
+): Promise<void> {
+  if (await isGitWorkTree(themePath)) {
+    const listing = await runCommand(
+      "git",
+      [
+        "-C",
+        themePath,
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+        ".",
+        ":(exclude)scratch",
+      ],
+      themePath,
+    );
+
+    if (listing.code !== 0) {
+      throw new Error(
+        `Failed to list theme files via git in ${themePath}:\n${listing.stderr}`,
+      );
+    }
+
+    const relativePaths = listing.stdout.split("\0").filter(Boolean);
+
+    if (relativePaths.length === 0) {
+      throw new Error(`No theme files found in ${themePath}`);
+    }
+
+    for (const relativePath of relativePaths) {
+      const source = join(themePath, relativePath);
+
+      try {
+        const stats = await stat(source);
+        if (!stats.isFile()) {
+          continue;
+        }
+      } catch {
+        // Tracked but deleted in the work tree: nothing to copy.
+        continue;
+      }
+
+      const target = join(destination, relativePath);
+      await mkdir(dirname(target), { recursive: true });
+      await copyFile(source, target);
+    }
+
+    return;
+  }
+
+  // Fallback for a non-Git source directory: copy recursively while excluding
+  // heavy or generated paths that would never ship with the theme.
+  const excludedNames = new Set(["node_modules", "public", ".git", "scratch"]);
+  await cp(themePath, destination, {
+    recursive: true,
+    filter: (source: string): boolean => {
+      if (excludedNames.has(basename(source))) {
+        return false;
+      }
+
+      return !source.includes(join("resources", "_gen"));
+    },
+  });
+}
+
+/**
+ * Install the theme into the temporary project, either from the local working
+ * tree (default) or from the published remote via a Git submodule.
+ *
+ * @param options Runtime options.
+ * @param projectRoot Absolute path to the temporary quickstart project.
+ * @param reports Accumulated step reports (appended to in submodule mode).
+ * @throws Error when installation fails or the theme is incomplete.
+ */
+async function installTheme(
+  options: RoutineOptions,
+  projectRoot: string,
+  reports: StepReport[],
+): Promise<void> {
+  const destination = join(projectRoot, options.themeDir);
+
+  if (options.verbose) {
+    console.log(`\n[RUN] Install theme (source: ${options.themeSource})`);
+  }
+
+  if (options.themeSource === "submodule") {
+    const step: StepDefinition = {
+      name: "Add theme as Git submodule",
+      command: "git",
+      args: ["submodule", "add", options.themeRepo, options.themeDir],
+      cwd: projectRoot,
+      expectedFiles: [options.themeDir, ".gitmodules"],
+    };
+    const report = await executeStep(step);
+    reports.push(report);
+
+    if (options.verbose) {
+      console.log(
+        `[OK ] ${step.name} (${report.result.durationMs} ms, exit ${String(report.result.code)})`,
+      );
+    }
+
+    return;
+  }
+
+  const started = Date.now();
+  await copyLocalTheme(options.themePath, destination);
+
+  // Sanity check: a usable theme must at least expose theme.toml and layouts.
+  await assertFileExists(join(destination, "theme.toml"));
+  await assertFileExists(join(destination, "layouts"));
+
+  if (options.verbose) {
+    console.log(
+      `[OK ] Copied local theme from ${options.themePath} (${Date.now() - started} ms)`,
+    );
+  }
+}
+
+/**
+ * Run a list of command steps with consistent logging and reporting.
+ *
+ * @param steps Steps to execute in order.
+ * @param options Runtime options.
+ * @param projectRoot Absolute path to the temporary quickstart project.
+ * @param reports Accumulated step reports (appended to).
+ */
+async function runSteps(
+  steps: StepDefinition[],
+  options: RoutineOptions,
+  projectRoot: string,
+  reports: StepReport[],
+): Promise<void> {
+  for (const step of steps) {
+    if (options.verbose) {
+      console.log(`\n[RUN] ${step.name}`);
+      console.log(`      ${formatCommand(step.command, step.args)}`);
+    }
+
+    const report = isHugoBuildCommand(step)
+      ? await executeHugoBuildStep(step, projectRoot)
+      : await executeStep(step);
+
+    reports.push(report);
+
+    if (options.verbose) {
+      console.log(
+        `[OK ] ${step.name} (${report.result.durationMs} ms, exit ${String(report.result.code)})`,
+      );
+
+      const trimmedOutput = report.result.combined.trim();
+      if (trimmedOutput) {
+        console.log(trimmedOutput);
+      }
+    }
+  }
+}
+
+/**
+ * Run the full Hugo quickstart verification routine.
+ *
+ * @param options Runtime options.
+ * @returns Process exit code.
+ */
+async function runRoutine(options: RoutineOptions): Promise<number> {
+  const sandboxRoot = await mkdtemp(join(tmpdir(), "hugo-quickstart-"));
+  const projectRoot = join(sandboxRoot, options.projectName);
+
+  const reports: StepReport[] = [];
+
+  // Steps that prepare the project before the theme is installed.
+  const setupSteps: StepDefinition[] = [
+    {
+      name: "Create Hugo project",
+      command: "hugo",
+      args: ["new", "project", options.projectName],
+      cwd: sandboxRoot,
+      expectedFiles: [join(options.projectName, options.configFile)],
+    },
+    {
+      name: "Initialise Git repository",
+      command: "git",
+      args: ["init"],
+      cwd: projectRoot,
+      expectedFiles: [".git"],
+    },
+  ];
+
+  // Steps that run once the theme is in place.
+  const buildSteps: StepDefinition[] = [
+    {
+      name: "Configure theme in Hugo config",
+      command: "bash",
+      args: [
+        "-lc",
+        `printf "\\ntheme = '${options.themeName}'\\n" >> ${JSON.stringify(options.configFile)}`,
+      ],
+      cwd: projectRoot,
+      expectedFiles: [options.configFile],
+    },
+    {
+      name: "Build site",
+      command: "hugo",
+      args: [],
+      cwd: projectRoot,
+      expectedFiles: ["public/index.html"],
+    },
+  ];
+
+  try {
+    console.log(`Test root: ${sandboxRoot}`);
+    console.log(`Project root: ${projectRoot}`);
+    console.log(
+      options.themeSource === "submodule"
+        ? `Theme source: submodule (${options.themeRepo})`
+        : `Theme source: local (${options.themePath})`,
+    );
+
+    await runSteps(setupSteps, options, projectRoot, reports);
+    await installTheme(options, projectRoot, reports);
+    await runSteps(buildSteps, options, projectRoot, reports);
+
+    const configPath = join(projectRoot, options.configFile);
+    const homepagePath = join(projectRoot, "public/index.html");
+    const contentPath = join(projectRoot, "content/foo.md");
+    const draftOutputPath = join(projectRoot, "public", "foo", "index.html");
+
+    console.log("\n[RUN] Strict config assertion");
+    await assertThemeConfigured(configPath, options.themeName);
+    console.log("[OK ] Strict config assertion");
+
+    console.log("\n[RUN] Strict homepage assertion");
+    await assertHomepageLooksValid(homepagePath);
+    console.log("[OK ] Strict homepage assertion");
+
+    console.log("\n[RUN] Create sample content");
+    const createContentStep: StepDefinition = {
+      name: "Create sample content",
+      command: "hugo",
+      args: ["new", "foo.md"],
+      cwd: projectRoot,
+      expectedFiles: ["content/foo.md"],
+    };
+    const createContentReport = await executeStep(createContentStep);
+    reports.push(createContentReport);
+
+    if (options.verbose) {
+      console.log(
+        `      ${formatCommand(createContentStep.command, createContentStep.args)}`,
+      );
+      console.log(
+        `[OK ] ${createContentStep.name} (${createContentReport.result.durationMs} ms, exit ${String(createContentReport.result.code)})`,
+      );
+
+      const trimmedOutput = createContentReport.result.combined.trim();
+      if (trimmedOutput) {
+        console.log(trimmedOutput);
+      }
+    }
+
+    console.log("\n[RUN] Replace generated content with quickstart sample");
+    await replaceGeneratedContent(contentPath);
+    console.log("[OK ] Replace generated content with quickstart sample");
+
+    console.log("\n[RUN] Build drafts and verify rendered draft content");
+    const draftBuildStep: StepDefinition = {
+      name: "Build site with drafts",
+      command: "hugo",
+      args: ["--buildDrafts"],
+      cwd: projectRoot,
+      expectedFiles: ["public/index.html", "public/foo/index.html"],
+    };
+    const draftBuildReport = await executeHugoBuildStep(
+      draftBuildStep,
+      projectRoot,
+    );
+    reports.push(draftBuildReport);
+
+    if (options.verbose) {
+      console.log(
+        `      ${formatCommand(draftBuildStep.command, draftBuildStep.args)}`,
+      );
+      console.log(
+        `[OK ] ${draftBuildStep.name} (${draftBuildReport.result.durationMs} ms, exit ${String(draftBuildReport.result.code)})`,
+      );
+
+      const trimmedOutput = draftBuildReport.result.combined.trim();
+      if (trimmedOutput) {
+        console.log(trimmedOutput);
+      }
+    }
+
+    const draftPageHtml = await readTextFile(draftOutputPath);
+    assertDraftPageRendered(draftPageHtml);
+    console.log("[OK ] Build drafts and verify rendered draft content");
+
+    console.log("\n[RUN] Replace root hugo.toml with quickstart config");
+    await replaceHugoConfig(configPath, options.themeName);
+    console.log("[OK ] Replace root hugo.toml with quickstart config");
+
+    console.log("\n[RUN] Build drafts and verify updated title and locale");
+    const configBuildStep: StepDefinition = {
+      name: "Build site with updated config and drafts",
+      command: "hugo",
+      args: ["--buildDrafts"],
+      cwd: projectRoot,
+      expectedFiles: ["public/index.html", "public/foo/index.html"],
+    };
+    const configBuildReport = await executeHugoBuildStep(
+      configBuildStep,
+      projectRoot,
+    );
+    reports.push(configBuildReport);
+
+    if (options.verbose) {
+      console.log(
+        `      ${formatCommand(configBuildStep.command, configBuildStep.args)}`,
+      );
+      console.log(
+        `[OK ] ${configBuildStep.name} (${configBuildReport.result.durationMs} ms, exit ${String(configBuildReport.result.code)})`,
+      );
+
+      const trimmedOutput = configBuildReport.result.combined.trim();
+      if (trimmedOutput) {
+        console.log(trimmedOutput);
+      }
+    }
+
+    const updatedHomepageHtml = await readTextFile(homepagePath);
+    assertUpdatedConfigInOutput(updatedHomepageHtml);
+    console.log("[OK ] Build drafts and verify updated title and locale");
+
+    console.log("\n[RUN] Production build should exclude draft content");
+    const productionBuildStep: StepDefinition = {
+      name: "Build production site without drafts",
+      command: "hugo",
+      args: [],
+      cwd: projectRoot,
+      expectedFiles: ["public/index.html"],
+    };
+    const productionBuildReport = await executeHugoBuildStep(
+      productionBuildStep,
+      projectRoot,
+    );
+    reports.push(productionBuildReport);
+
+    if (options.verbose) {
+      console.log(
+        `      ${formatCommand(productionBuildStep.command, productionBuildStep.args)}`,
+      );
+      console.log(
+        `[OK ] ${productionBuildStep.name} (${productionBuildReport.result.durationMs} ms, exit ${String(productionBuildReport.result.code)})`,
+      );
+
+      const trimmedOutput = productionBuildReport.result.combined.trim();
+      if (trimmedOutput) {
+        console.log(trimmedOutput);
+      }
+    }
+
+    await assertDraftHiddenInProduction(projectRoot, homepagePath);
+    console.log("[OK ] Production build should exclude draft content");
+
+    console.log("\nResult: PASS");
+
+    if (options.keepOnSuccess) {
+      console.log(`Keeping successful test directory: ${projectRoot}`);
+    } else {
+      await rm(sandboxRoot, { recursive: true, force: true });
+      console.log(`Deleted successful test directory: ${sandboxRoot}`);
+    }
+
+    return 0;
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+
+    console.error("\nResult: FAIL");
+    console.error(message);
+
+    if (reports.length > 0) {
+      console.error("\nCompleted command steps before failure:");
+      for (const report of reports) {
+        console.error(`- ${report.step}`);
+      }
+    }
+
+    if (options.keepOnFailure) {
+      console.error(
+        `\nKept failing test directory for inspection: ${projectRoot}`,
+      );
+    } else {
+      await rm(sandboxRoot, { recursive: true, force: true });
+      console.error(`\nDeleted failing test directory: ${sandboxRoot}`);
+    }
+
+    return 1;
+  }
+}
+
+/**
+ * Main entry point.
+ */
+async function main(): Promise<void> {
+  try {
+    const options = parseArgs(process.argv.slice(2));
+    const exitCode = await runRoutine(options);
+    process.exit(exitCode);
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : "Unknown fatal error";
+    console.error(`Fatal error: ${message}`);
+    process.exit(1);
+  }
+}
+
+await main();

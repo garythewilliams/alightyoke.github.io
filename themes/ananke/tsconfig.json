@@ -1,0 +1,17 @@
+{
+  "extends": "@dnbhq/tsconfig/cli",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["**/*.ts", "scripts/**/*"],
+  "exclude": [
+    "node_modules",
+    "scratch",
+    "tests/.playwright",
+    "tests/fixtures/**/public"
+  ]
+}

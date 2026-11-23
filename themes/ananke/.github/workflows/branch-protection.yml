@@ -1,0 +1,47 @@
+name: Validate pull request rules
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate-main-source-branch:
+    name: Require development as source branch for main
+    runs-on: ubuntu-latest
+    if: github.base_ref == 'main'
+
+    steps:
+      - name: Validate source branch
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          if [ "${HEAD_REF}" != "development" ]; then
+            echo "::error::Pull requests into main must come from development. Current source branch: ${HEAD_REF}"
+            exit 1
+          fi
+
+  validate-documentation-item:
+    name: Require a documentation decision
+    runs-on: ubuntu-latest
+    if: >-
+      github.base_ref == 'development' &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+
+    steps:
+      - name: Check out the check script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Validate the documentation item
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node .github/scripts/check-documentation-item.mjs
