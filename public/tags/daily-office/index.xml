@@ -6,14 +6,21 @@
     <description>Recent content in Daily-Office on A Light Yoke</description>
     <generator>Hugo</generator>
     <language>en</language>
-    <lastBuildDate>Mon, 23 Nov 2026 06:00:00 +0000</lastBuildDate>
+    <lastBuildDate>Mon, 23 Nov 2026 18:00:00 +0000</lastBuildDate>
     <atom:link href="http://localhost:1313/tags/daily-office/index.xml" rel="self" type="application/rss+xml" />
     <item>
-      <title>001: Monday Morning Prayer – Ordinary Time</title>
-      <link>http://localhost:1313/episodes/001-morning-prayer/</link>
+      <title>002: Evening Light – Monday Evening Prayer</title>
+      <link>http://localhost:1313/episodes/002-evening-light/</link>
+      <pubDate>Mon, 23 Nov 2026 18:00:00 +0000</pubDate>
+      <guid>http://localhost:1313/episodes/002-evening-light/</guid>
+      <description>A short-form Evening Prayer office reflecting on the close of the day, featuring the Phos Hilaron, Psalm 141, and a reading from John 8.</description>
+    </item>
+    <item>
+      <title>001: Morning Light – Monday Morning Prayer</title>
+      <link>http://localhost:1313/episodes/001-morning-light/</link>
       <pubDate>Mon, 23 Nov 2026 06:00:00 +0000</pubDate>
-      <guid>http://localhost:1313/episodes/001-morning-prayer/</guid>
-      <description>A short-form Morning Prayer office featuring Psalm 23, a reading from Matthew 11, and brief intercessions for the day ahead.</description>
+      <guid>http://localhost:1313/episodes/001-morning-light/</guid>
+      <description>A short-form Morning Prayer office welcoming the new day, featuring Psalm 63, a reading from Lamentations 3, and brief intercessions for the hours ahead.</description>
     </item>
   </channel>
 </rss>
